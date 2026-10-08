@@ -11,11 +11,18 @@ local ffiUtil = require("ffi/util")
 local logger = require("logger")
 local util = require("util")
 
+local Screen = Device.screen
+
 local InstantDictionary = WidgetContainer:extend{
     name = "instantdictionary",
     is_doc_only = true,
 }
 
+local MAX_LOOKUP_DISTANCE = 36
+
+-- Checks whether a given character should be ignored.
+--   This is supposed to fix an annoyance I've had where characters such as 
+--  【】（）were highlighted by themselves if I pressed near the end of a quotation, for example.
 local function isNonLookupChar(char)
     if char:match("^%s$") or char:match("^%p$") then
         return true
@@ -49,6 +56,96 @@ local function hasLookupText(text)
             return true
         end
     end
+    return false
+end
+
+local function pointInFooterContent(ui, pos)
+    local footer = ui and ui.footer
+    if not footer or not pos then
+        return false
+    end
+
+    if footer.view and footer.view.flipping_visible
+            and footer.progress_bar and footer.progress_bar.dimen then
+        return footer.progress_bar.dimen:contains(pos)
+    end
+
+    if footer.view and not footer.view.footer_visible then
+        return false
+    end
+
+    local dimen = footer.footer_content and footer.footer_content.dimen
+    return dimen and dimen:contains(pos)
+end
+
+local function pointInRegisteredTouchZone(ui, zone_id, pos)
+    local zone = ui and ui._zones and ui._zones[zone_id]
+    local range = zone and zone.gs_range and zone.gs_range.range
+    return range and range:contains(pos)
+end
+
+-- Checks how far a given position is away from a (word) box.
+--   By default, long-press highlights can select word boxes that are very far away.
+--   Combined with instant highlights, this would lead to constant accidental selections of far away text.
+local function distanceFromBox(box, pos)
+    local dx = 0
+    if pos.x < box.x then
+        dx = box.x - pos.x
+    elseif pos.x > box.x + box.w then
+        dx = pos.x - (box.x + box.w)
+    end
+
+    local dy = 0
+    if pos.y < box.y then
+        dy = box.y - pos.y
+    elseif pos.y > box.y + box.h then
+        dy = pos.y - (box.y + box.h)
+    end
+
+    return math.sqrt(dx * dx + dy * dy)
+end
+
+function InstantDictionary:isTapCloseToSelection(ges)
+    local selected_text = self.ui.highlight and self.ui.highlight.selected_text
+    local boxes = selected_text and (selected_text.sboxes or selected_text.pboxes)
+    if not ges.pos or not selected_text or not boxes or not boxes[1] then
+        return false
+    end
+
+    local max_distance = Screen:scaleBySize(MAX_LOOKUP_DISTANCE)
+    local page = selected_text.pos0 and selected_text.pos0.page
+    for _, box in ipairs(boxes) do
+        local screen_box = box
+        if page and self.ui.view and self.ui.view.pageToScreenTransform then
+            screen_box = self.ui.view:pageToScreenTransform(page, box)
+        end
+        if screen_box and distanceFromBox(screen_box, ges.pos) <= max_distance then
+            return true
+        end
+    end
+
+    return false
+end
+
+-- Checks if the user's touch position is within a word selection box.
+function InstantDictionary:isTapInsideSelection(ges)
+    local selected_text = self.ui.highlight and self.ui.highlight.selected_text
+    local boxes = selected_text and (selected_text.sboxes or selected_text.pboxes)
+    if not ges.pos or not selected_text or not boxes or not boxes[1] then
+        return false
+    end
+
+    local page = selected_text.pos0 and selected_text.pos0.page
+    for _, box in ipairs(boxes) do
+        local screen_box = box
+        if page and self.ui.view and self.ui.view.pageToScreenTransform then
+            screen_box = self.ui.view:pageToScreenTransform(page, box)
+        end
+        if screen_box and screen_box:contains(ges.pos) then
+            return true
+        end
+    end
+
     return false
 end
 
@@ -92,6 +189,10 @@ function InstantDictionary:registerDictionaryTapZone()
 end
 
 function InstantDictionary:onTapAsDictionaryHold(ges)
+    if pointInFooterContent(self.ui, ges.pos) then
+        return false
+    end
+
     local highlight = self.ui and self.ui.highlight
     if not highlight or not highlight.onHold or not highlight.onHoldRelease then
         return false
@@ -104,6 +205,9 @@ function InstantDictionary:onTapAsDictionaryHold(ges)
     G_reader_settings:saveSetting("highlight_action_on_single_word", true)
     G_reader_settings:saveSetting("default_highlight_action", "dictionary")
 
+    -- Executes onHold, then checks whether the highlight action is allowed.
+    --  Highlight will be ignored if the touch position is too far away from a word,
+    --  within the footer (statusbar), or the lookup consists of ignored characters.
     local ok, handled_or_err = pcall(function()
         local handled = highlight:onHold(nil, ges)
 
@@ -113,8 +217,17 @@ function InstantDictionary:onTapAsDictionaryHold(ges)
                 return false
             end
 
-            -- This is the missing piece. KOReader performs the actual default
-            -- highlight action, including dictionary popup, in onHoldRelease().
+            if pointInRegisteredTouchZone(self.ui, "readerfooter_tap", ges.pos)
+                    and not self:isTapInsideSelection(ges) then
+                highlight:onClose()
+                return false
+            end
+
+            if not self:isTapCloseToSelection(ges) then
+                highlight:onClose()
+                return false
+            end
+
             return highlight:onHoldRelease()
         end
 
