@@ -12,7 +12,12 @@ Futher, touches within the statusbar will be ignored.
 
 ## Install
 
-Download this repository, extract the zip file and move _instantdictionary.koplugin_ inside your KOReader _plugins_ folder and copy all the files from this repository into it.
+Download this repository, extract the zip file, rename the folder to _instantdictionary.koplugin_ and move it into the KOReader _plugins_ folder.
 Make sure the plugin is enabled under _Main Menu_ > _Options_ > _More Tools_ > _Plugin Management_.
 
 The plugin offers no configuration methods in KOReader.
+
+## Related work
+
+This repository is inspired by https://github.com/ckilb/dictionarymode.koplugin, which works on a different principle.
+Instead of triggering a long press action, the above mentioned repository implements an instant dictionary behaviour by directly calling languagesupport and triggering a LookupWord event.
